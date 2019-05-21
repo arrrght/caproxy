@@ -1,6 +1,7 @@
 use hyper::rt::{self, Future};
 use hyper::service::service_fn;
 use hyper::{Client, Server};
+use hyper::header::{HeaderMap, HeaderName, HeaderValue};
 //use std::net::SocketAddr;
 
 fn main() {
@@ -21,9 +22,11 @@ fn main() {
         // `service_fn_ok` is a helper to convert a function that
         // returns a Response into a `Service`.
         service_fn(move |mut req| {
-            let uri_string = format!("http://cap.avtocod.ru/{}", req.uri().path_and_query().map(|x| x.as_str()).unwrap_or(""));
+            let uri_string = format!("http://cap.avtocod.ru{}", req.uri().path_and_query().map(|x| x.as_str()).unwrap_or(""));
             let uri = uri_string.parse().unwrap();
             *req.uri_mut() = uri;
+            req.headers_mut().remove("host");
+            println!("{:?}", req);
             client.request(req)
         })
     };
