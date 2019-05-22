@@ -17,19 +17,46 @@ struct Prox {
     url: String,
     date: std::time::Instant
 }
-impl Prox {
-    fn new(url: String) -> Prox {
-        Prox { url: url, date: Instant::now() }
+
+#[derive(Debug)]
+struct Proxies {
+    urls: Vec<String>,
+    list: HashMap<usize, Prox>
+}
+
+impl Proxies {
+    fn get_proxy(&self) -> String {
+        let mut rng = rand::thread_rng();
+        self.urls[rng.gen_range(0, self.urls.len())].to_owned()
+    }
+    fn add_proxy(&mut self, url: &str) {
+        self.urls.push(url.to_owned());
+    }
+    fn new() -> Proxies { 
+        Proxies {
+            urls: Vec::new(),
+            list: HashMap::new()
+        }
+    }
+    fn get(&self, id: usize) -> Option<String> {
+        match self.list.get(&id) {
+            Some(o) => Some(o.url.clone()),
+            None => None
+        }
+    }
+    fn set(&mut self, id: usize, url: String) {
+        let prox = Prox { url: url, date: Instant::now() };
+        self.list.insert(id, prox);
+
+        // cleanup
+        let now = Instant::now();
+        let r2del: Vec<usize> = self.list.iter().filter(|&(_,v)| now.duration_since(v.date).as_secs() > 60).map(|(k,_)| k.to_owned()).collect();
+        let _consumed: Vec<_> = r2del.iter().map(|i| self.list.remove(i)).collect();
+        info!("r2d: {:?}", r2del);
     }
 }
 
-fn get_random_proxy() -> String {
-    let mut rng = rand::thread_rng();
-    let urls = ["http://cap.avtocod.ru", "http://cap2.avtocod.ru"];
-    urls[rng.gen_range(0,urls.len())].to_string()
-}
-
-fn change_req(proxy_now: String, r: Arc<Mutex<HashMap<usize, Prox>>>, mut req: Request<Body>) -> Request<Body>{
+fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>) -> Request<Body>{
     info!("REQ1 {:?}", req);
 
     let lock = match r.lock() {
@@ -39,17 +66,17 @@ fn change_req(proxy_now: String, r: Arc<Mutex<HashMap<usize, Prox>>>, mut req: R
 
     let proxy_insert = if req.uri().path() == "/res.php" {
         let s1: String = req.uri().query().unwrap().to_string().split("&").filter(|x| &x[0..3] == "id=").collect();
-        let s2 = match &s1[3..].parse::<usize>() {
-            Ok(r) => r.to_owned(),
-            Err(_e) => 0 as usize
-        };
-        let url4get = match lock.get(&s2) {
-            None => &proxy_now,
-            Some(o) => &o.url
-        };
-        url4get
+        match s1[3..].parse::<usize>() {
+            Ok(r) => {
+                match lock.get(r) {
+                    Some(o) => o,
+                    None => proxy_now
+                }
+            },
+            Err(_e) => proxy_now
+        }
     }else{ 
-        &proxy_now
+        proxy_now
     };
 
     info!("GOT NOW proxy:{}, hash:{:?}", proxy_insert, lock);
@@ -64,7 +91,9 @@ fn change_req(proxy_now: String, r: Arc<Mutex<HashMap<usize, Prox>>>, mut req: R
 fn main() {
     pretty_env_logger::init();
 
-    let proxies: HashMap<usize, Prox> = HashMap::new();
+    let mut proxies = Proxies::new();
+    proxies.add_proxy("http://cap.avtocod.ru");
+    proxies.add_proxy("http://cap2.avtocod.ru");
     let r = Arc::new(Mutex::new(proxies));
 
     let in_addr = ([127, 0, 0, 1], 3001).into();
@@ -73,18 +102,20 @@ fn main() {
     let proxy = move || {
         let client = client_main.clone();
         let inner = Arc::clone(&r);
+        let inner2 = Arc::clone(&r);
 
         service_fn(move |req| {
-            let proxy_now = get_random_proxy();
+            let proxy_now = {
+                inner2.lock().unwrap().get_proxy()
+            };
             let proxy_now2 = proxy_now.clone();
-            let inner2 = Arc::clone(&inner);
             let inner3 = Arc::clone(&inner);
-            let req = change_req(proxy_now, inner2, req);
+            let inner4 = Arc::clone(&inner);
+            let req = change_req(proxy_now, inner3, req);
             debug!("REDIR_REQ: {} / {}", req.method(), req.uri());
             client
                 .request(req)
                 .and_then(move |res| {
-                    debug!("res: {:?}", res);
                     res.into_body().concat2()
                 })
                 .and_then(move |body| {
@@ -98,12 +129,13 @@ fn main() {
                                 match ok_answer_str.parse::<usize>() {
                                     Ok(r) => {
                                         info!("OK ANS: {:?}, ", r);
-                                        let mut lock = match inner3.lock() {
+                                        let mut lock = match inner4.lock() {
                                             Ok(guard) => guard,
                                             Err(poison) => poison.into_inner()
                                         };
-                                        let prox = Prox::new(proxy_now2);
-                                        lock.insert(r, prox);
+                                        //let prox = Prox::new(proxy_now2);
+                                        //lock.insert(r, prox);
+                                        lock.set(r, proxy_now2);
                                     },
                                     Err(_e) => debug!("not yet")
                                 }
