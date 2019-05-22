@@ -5,6 +5,10 @@ authors = ["a3r <arrrght@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+url = "1.7.2"
+bytes = "0.4.12"
+rand = "0.6.5"
+futures = "0.1.27"
 reqwest = "0.9"
 hyper = "0.12"
 pretty_env_logger = "0.3"
