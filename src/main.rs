@@ -21,7 +21,7 @@ struct Prox {
 struct ProxUrl {
     url: String,
     weight: usize,
-    enabled: bool
+    enabled: bool,
 }
 
 #[derive(Debug)]
@@ -34,7 +34,7 @@ impl Proxies {
     fn get_proxy(&self) -> String {
         let mut rng = rand::thread_rng();
         let sum_weight = self.urls.iter().fold(0, |acc, x| acc + x.weight);
-        let random = rng.gen_range(0, sum_weight-1);
+        let random = rng.gen_range(0, sum_weight - 1);
 
         let mut now: usize = 0;
         let mut final_result = self.urls[rng.gen_range(0, self.urls.len())].url.to_owned();
@@ -45,15 +45,21 @@ impl Proxies {
                 break;
             }
         }
-        println!("GET_PROXY: {:?}", final_result);
+        debug!("GET_PROXY: {:?}", final_result);
         final_result.to_owned()
-        //self.urls[rng.gen_range(0, self.urls.len())].url.to_owned()
     }
-    fn new(vec: Vec<(&str, usize)>) -> Proxies {
-        let urls = vec.iter().map(|(u,w)| ProxUrl {url: u.to_string(), weight: *w, enabled: true}).collect();
+    fn new(vec: Vec<(String, usize)>) -> Proxies {
+        let urls = vec
+            .iter()
+            .map(|(u, w)| ProxUrl {
+                url: u.to_string(),
+                weight: *w,
+                enabled: true,
+            })
+            .collect();
         Proxies {
             urls: urls,
-            list: HashMap::new()
+            list: HashMap::new(),
         }
     }
     fn get(&self, id: usize) -> Option<String> {
@@ -114,14 +120,29 @@ fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>)
 
 fn main() {
     pretty_env_logger::init();
+    //CAPS=20=http://cap.avtocod.ru,80=http://cap2.avtocod.ru
+    let proxies_env: Vec<(String, usize)> = std::env::var("CAPS")
+        .unwrap()
+        .split(",")
+        .map(|x| {
+            let a: Vec<&str> = x.split("=").collect();
+            (a[1].to_owned(), a[0].parse::<usize>().unwrap())
+        })
+        .collect();
 
-    let proxies = Proxies::new(vec![
-        ("http://cap.avtocod.ru", 20),
-        ("http://cap2.avtocod.ru", 80)
-    ]);
+    info!("{:?}", proxies_env);
+    let proxies = Proxies::new(proxies_env);
     let r = Arc::new(Mutex::new(proxies));
 
-    let in_addr = ([127, 0, 0, 1], 3001).into();
+    //std::process::exit(1);
+
+    //let proxies = Proxies::new(vec![
+    //    ("http://cap.avtocod.ru", 20),
+    //    ("http://cap2.avtocod.ru", 80)
+    //]);
+    //let r = Arc::new(Mutex::new(proxies));
+
+    let in_addr = ([0, 0, 0, 0], 8080).into();
     let client_main = Client::new();
 
     let proxy = move || {
