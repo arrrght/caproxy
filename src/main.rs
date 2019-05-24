@@ -62,8 +62,8 @@ impl Proxies {
             list: HashMap::new(),
         }
     }
-    fn get(&self, id: usize) -> Option<String> {
-        match self.list.get(&id) {
+    fn get(&mut self, id: usize) -> Option<String> {
+        match self.list.remove(&id) {
             Some(o) => Some(o.url.clone()),
             None => None,
         }
@@ -91,7 +91,7 @@ impl Proxies {
 fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>) -> Request<Body> {
     info!("REQ1 {:?}", req);
 
-    let lock = match r.lock() {
+    let mut lock = match r.lock() {
         Ok(guard) => guard,
         Err(poison) => poison.into_inner(),
     };
@@ -109,7 +109,7 @@ fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>)
         proxy_now
     };
 
-    info!("GOT NOW proxy:{}, hash:{:?}", proxy_insert, lock);
+    info!("GOT NOW proxy:{}, hash-len:{:?}", proxy_insert, lock.urls.len());
 
     let uri_string = format!("{}{}", proxy_insert, req.uri().path_and_query().map(|x| x.as_str()).unwrap_or(""));
     let uri = uri_string.parse().expect("here2");
@@ -120,7 +120,6 @@ fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>)
 
 fn main() {
     pretty_env_logger::init();
-    //CAPS=20=http://cap.avtocod.ru,80=http://cap2.avtocod.ru
     let proxies_env: Vec<(String, usize)> = std::env::var("CAPS")
         .unwrap()
         .split(",")
@@ -133,14 +132,6 @@ fn main() {
     info!("{:?}", proxies_env);
     let proxies = Proxies::new(proxies_env);
     let r = Arc::new(Mutex::new(proxies));
-
-    //std::process::exit(1);
-
-    //let proxies = Proxies::new(vec![
-    //    ("http://cap.avtocod.ru", 20),
-    //    ("http://cap2.avtocod.ru", 80)
-    //]);
-    //let r = Arc::new(Mutex::new(proxies));
 
     let in_addr = ([0, 0, 0, 0], 8080).into();
     let client_main = Client::new();
