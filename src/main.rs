@@ -40,27 +40,27 @@ struct Proxies {
 impl Proxies {
     fn get_proxy(&self) -> String {
         let mut rng = rand::thread_rng();
-        let sum_weight = self.urls.iter().fold(0, |acc, x| acc + x.weight);
+        let sum_weight = self.urls.iter().filter(|f| f.enabled).fold(0, |acc, x| acc + x.weight);
         let random = rng.gen_range(0, sum_weight - 1);
 
         let mut now: usize = 0;
         let mut final_result = self.urls[rng.gen_range(0, self.urls.len())].url.to_owned();
         for i in self.urls.iter() {
             now += i.weight;
-            if now >= random {
+            if now >= random && i.enabled {
                 final_result = i.url.to_owned();
                 break;
             }
         }
         final_result.to_owned()
     }
-    fn new(vec: Vec<(String, usize)>) -> Proxies {
+    fn new(vec: Vec<(String, isize)>) -> Proxies {
         let urls = vec
             .iter()
             .map(|(u, w)| ProxUrl {
                 url: u.to_string(),
-                weight: *w,
-                enabled: true,
+                weight: w.abs() as usize,
+                enabled: w >= &0
             })
             .collect();
         Proxies {
@@ -177,18 +177,18 @@ fn run_checkers(p: Arc<Mutex<Proxies>>){
 
 fn main() {
     pretty_env_logger::init();
-    let proxies_env: Vec<(String, usize)> = std::env::var("CAPS")
+    let proxies_env: Vec<(String, isize)> = std::env::var("CAPS")
         .expect("CAPS env not set")
         .split(",")
         .map(|x| {
             let a: Vec<&str> = x.split("=").collect();
-            (a[1].to_owned(), a[0].parse::<usize>().unwrap())
+            (a[1..].join("="), a[0].parse::<isize>().unwrap())
         })
         .collect();
 
-    info!("{:?}", proxies_env);
-
     let proxies = Proxies::new(proxies_env);
+    info!("Run with: {:?}", proxies);
+
     let r = Arc::new(Mutex::new(proxies));
 
     //run_checkers(r.clone());
