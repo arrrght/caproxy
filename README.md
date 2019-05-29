@@ -8,3 +8,18 @@
 [docker-url]: https://cloud.docker.com/repository/docker/a3rght/caproxy
 
 [CapMonster](https://zennolab.com/ru/products/capmonster/) balanced proxy
+
+Log verbosity:
+```
+RUST_LOG=caproxy={trace|debug|log}
+i.e.
+RUST_LOG=caproxy=debug
+```
+
+Cap hosts, balanced with score. If score is negative, it will be disabled on default.
+```
+CAPS=score1:url1,score2:url2
+i.e.
+CAPS=20:http://cap1.org,80:http://cap2.net
+CAPS=20:http://cap-one.org,-80:http://cap-second.net
+```
