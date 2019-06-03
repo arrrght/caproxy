@@ -54,6 +54,13 @@ impl Proxies {
         }
         final_result.to_owned()
     }
+    fn change_state(&mut self, disable_url: &str, b: bool) {
+        for url in self.urls.iter_mut() {
+            if *url.url == *disable_url {
+                url.enabled = b;
+            }
+        }
+    }
     fn new(vec: Vec<(String, isize)>) -> Proxies {
         let urls = vec
             .iter()
@@ -136,10 +143,22 @@ fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>)
     (stat, req)
 }
 
-/*
-fn run_checkers(p: Arc<Mutex<Proxies>>){
-    // TODO do not use that
-    let proxy_now = { p.lock().unwrap().get_proxy() };
+enum CheckersErr {
+    Reqwest(reqwest::Error),
+    Other(String)
+}
+impl std::fmt::Debug for CheckersErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match *self {
+            CheckersErr::Other(ref err) => write!(f, "Other: {}", err),
+            CheckersErr::Reqwest(ref err) => write!(f, "Reqwest: {:?}", err)
+        }
+    }
+}
+//fn run_checkers(proxy_now: String) -> Option<( usize, u32)> {
+fn run_checkers(proxy_now: String) -> Result<(usize, u32), CheckersErr> {
+    let time_now = Instant::now();
+    let proxy_now = &proxy_now;
     let client = reqwest::Client::new().post(&format!("{}/in.php", proxy_now));
     let file_part = reqwest::multipart::Part::bytes(&include_bytes!("generate.jpg")[..])
         .file_name("generate.jpg")
@@ -149,14 +168,16 @@ fn run_checkers(p: Arc<Mutex<Proxies>>){
         .text("method", "post")
         .part("file", file_part);
 
-    let mut response = client.multipart(form).send().unwrap();
+    let mut response = client.multipart(form).send().map_err(CheckersErr::Reqwest)?;
+    //let mut response = client.multipart(form).send().expect("omg-here-1");
     let mut response_body = String::new();
     response.read_to_string(&mut response_body).unwrap();
     let ans: Vec<&str> = response_body.split("|").collect();
     let ans_int: usize = ans[1].to_string().parse().unwrap();
-    debug!("ANS1:: {}", ans_int);
+    //debug!("CHK | {}", ans_int);
 
-    let mut ret: Option<String> = None;
+    //let mut ret: Option<(usize, u32)> = None;
+    let mut ret: Option<Result<(usize, u32), CheckersErr>> = None;
     let mut retry_cnt: usize = 0;
     while ret.is_none() || retry_cnt > 9 {
         retry_cnt += 1;
@@ -164,32 +185,40 @@ fn run_checkers(p: Arc<Mutex<Proxies>>){
         let req_get = reqwest::get(&check_api).unwrap().text();
         ret = match req_get.unwrap().as_ref() {
             "CAPCHA_NOT_READY" => {
-                std::thread::sleep(std::time::Duration::from_millis(200));
                 None
             },
-            x if x.starts_with("OK") => Some(x.to_string()),
-            x => panic!("F>U>C>K {:?}", x),
+            //x if x.starts_with("OK") => {
+            "OK|xab35" => {
+                let time_elapsed = time_now.elapsed().subsec_millis();
+                Some(Ok((retry_cnt, time_elapsed)))
+            },
+            _ => None
         };
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
-
+    //ret
+    match ret {
+        Some(x) => x,
+        None => Err(CheckersErr::Other("fuck this, i'm None".to_owned()))
+    }
 }
-*/
 
 fn main() {
     pretty_env_logger::init();
-    let proxies_env: Vec<(String, isize)> = std::env::var("CAPS")
-        .expect("CAPS env not set")
+    let mut proxies_env: Vec<(String, isize)> = std::env::var("CAPS")
+        .expect("CAPS environment not set")
         .split(",")
         .map(|x| {
             let a: Vec<&str> = x.split("=").collect();
-            (a[1..].join("="), a[0].parse::<isize>().unwrap())
+            (a[1..].join("="), a[0].parse::<isize>().expect("Can not parse weight on CAPS environment"))
         })
         .collect();
 
-    let proxies = Proxies::new(proxies_env);
+    let proxies = Proxies::new(proxies_env.clone());
     info!("Run with: {:?}", proxies);
 
     let r = Arc::new(Mutex::new(proxies));
+    let rr = Arc::clone(&r);
 
     //run_checkers(r.clone());
 
@@ -240,7 +269,38 @@ fn main() {
         })
     };
 
-    let server = Server::bind(&in_addr).serve(proxy).map_err(|e| eprintln!("Can not bind server error: {}", e));
-    println!("Listening on http://{}", in_addr);
-    hyper::rt::run(server);
+    // Run checkers
+    while let Some(proxy_now) = proxies_env.pop() {
+        let rr = Arc::clone(&rr);
+        std::thread::spawn(move || {
+            loop {
+                let (proxy_now, _i) = proxy_now.clone();
+                let ret = run_checkers(proxy_now.to_owned());
+                {
+                    let mut lock = match rr.lock() {
+                        Ok(guard) => guard,
+                        Err(poison) => poison.into_inner(),
+                    };
+                    match ret {
+                        Ok(x) => {
+                            debug!("cap {} checked {:?}", proxy_now, x);
+                            lock.change_state(&proxy_now, true);
+                        },
+                        Err(x) => {
+                            debug!("F>U>C>K> {:?}", x);
+                            lock.change_state(&proxy_now, false);
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2000));
+            }
+        });
+    };
+
+    hyper::rt::run(hyper::rt::lazy(move ||{
+        let server = Server::bind(&in_addr).serve(proxy).map_err(|e| println!("Can not bind server: {}", e));
+        hyper::rt::spawn(server);
+        println!("Listening on http://{}", in_addr);
+        Ok(())
+    }));
 }

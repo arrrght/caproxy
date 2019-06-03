@@ -16,7 +16,7 @@ i.e.
 RUST_LOG=caproxy=debug
 ```
 
-Cap hosts, balanced with score. If score is negative, it will be disabled on default.
+Cap hosts, balanced with score. If score is negative, it will be disabled on start.
 ```
 CAPS=score1:url1,score2:url2
 i.e.

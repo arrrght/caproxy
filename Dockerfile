@@ -12,5 +12,4 @@ FROM alpine:latest
 RUN apk add openssl
 COPY --from=cargo-build /usr/src/caproxy/target/x86_64-unknown-linux-musl/release/caproxy /usr/local/bin/caproxy
 
-#ENV RUST_LOG=caproxy=trace
 CMD ["/usr/local/bin/caproxy"]
