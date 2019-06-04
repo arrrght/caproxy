@@ -156,7 +156,7 @@ impl std::fmt::Debug for CheckersErr {
     }
 }
 //fn run_checkers(proxy_now: String) -> Option<( usize, u32)> {
-fn run_checkers(proxy_now: String) -> Result<(usize, u32), CheckersErr> {
+fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersErr> {
     let time_now = Instant::now();
     let proxy_now = &proxy_now;
     let client = reqwest::Client::new().post(&format!("{}/in.php", proxy_now));
@@ -194,7 +194,7 @@ fn run_checkers(proxy_now: String) -> Result<(usize, u32), CheckersErr> {
             },
             _ => None
         };
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(wait));
     }
     //ret
     match ret {
@@ -215,7 +215,15 @@ fn main() {
         .collect();
 
     let proxies = Proxies::new(proxies_env.clone());
-    info!("Run with: {:?}", proxies);
+    
+    let cap_check_period = std::env::var("CAP_CHECK_PERIOD").unwrap_or("5".to_owned()).parse::<u64>().unwrap_or(5);
+    let cap_check_wait = std::env::var("CAP_CHECK_WAIT").unwrap_or("200".to_owned()).parse::<u64>().unwrap_or(200);
+
+    info!("== RUN with ==");
+    info!("CAP_CHECK_PERIOD : {:?} sec", cap_check_period);
+    info!("CAP_CHECK_WAIT   : {:?} msec", cap_check_wait);
+    info!("CAPS {:?}", proxies);
+    info!("==============");
 
     let r = Arc::new(Mutex::new(proxies));
     let rr = Arc::clone(&r);
@@ -275,7 +283,7 @@ fn main() {
         std::thread::spawn(move || {
             loop {
                 let (proxy_now, _i) = proxy_now.clone();
-                let ret = run_checkers(proxy_now.to_owned());
+                let ret = run_checkers(cap_check_wait, proxy_now.to_owned());
                 {
                     let mut lock = match rr.lock() {
                         Ok(guard) => guard,
@@ -292,7 +300,7 @@ fn main() {
                         }
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(2000));
+                std::thread::sleep(std::time::Duration::from_millis(cap_check_period * 1000));
             }
         });
     };
