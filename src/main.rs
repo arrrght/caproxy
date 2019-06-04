@@ -216,11 +216,11 @@ fn main() {
 
     let proxies = Proxies::new(proxies_env.clone());
     
-    let cap_check_period = std::env::var("CAP_CHECK_PERIOD").unwrap_or("5".to_owned()).parse::<u64>().unwrap_or(5);
+    let cap_check_period = std::env::var("CAP_CHECK_PERIOD").unwrap_or("5000".to_owned()).parse::<u64>().unwrap_or(5000);
     let cap_check_wait = std::env::var("CAP_CHECK_WAIT").unwrap_or("200".to_owned()).parse::<u64>().unwrap_or(200);
 
     info!("== RUN with ==");
-    info!("CAP_CHECK_PERIOD : {:?} sec", cap_check_period);
+    info!("CAP_CHECK_PERIOD : {:?} msec", cap_check_period);
     info!("CAP_CHECK_WAIT   : {:?} msec", cap_check_wait);
     info!("CAPS {:?}", proxies);
     info!("==============");
@@ -300,7 +300,7 @@ fn main() {
                         }
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(cap_check_period * 1000));
+                std::thread::sleep(std::time::Duration::from_millis(cap_check_period));
             }
         });
     };
