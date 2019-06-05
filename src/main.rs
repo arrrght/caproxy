@@ -1,31 +1,31 @@
-use log::{debug, info, warn};
-use lazy_static::lazy_static;
 use bytes::{Buf, Bytes, IntoBuf};
 use futures::future;
 use hyper::rt::{Future, Stream};
 use hyper::service::service_fn;
 use hyper::{Body, Client, Request, Response, Server};
+use lazy_static::lazy_static;
+use log::{debug, info, warn};
 use rand::Rng;
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use std::io::Read;
 
 #[macro_use]
 extern crate prometheus;
-use prometheus::{ IntGaugeVec, Encoder, TextEncoder };
+use prometheus::{Encoder, IntGaugeVec, TextEncoder};
 
 lazy_static! {
-    static ref RETRY_CNT: IntGaugeVec = register_int_gauge_vec!( "retry_counter", "Retry counter", &["handler"]).unwrap();
-    static ref ACCESS_TIME: IntGaugeVec = register_int_gauge_vec!( "access_time", "Access time to CapMonster", &["handler"]).unwrap();
-    static ref IS_ALIVE: IntGaugeVec = register_int_gauge_vec!( "alive", "CapMonster is alive", &["handler"]).unwrap();
-    static ref CNT: IntGaugeVec = register_int_gauge_vec!( "cnt", "Counter", &["handler"]).unwrap();
+    static ref RETRY_CNT: IntGaugeVec = register_int_gauge_vec!("retry_counter", "Retry counter", &["handler"]).unwrap();
+    static ref ACCESS_TIME: IntGaugeVec = register_int_gauge_vec!("access_time", "Access time to CapMonster", &["handler"]).unwrap();
+    static ref IS_ALIVE: IntGaugeVec = register_int_gauge_vec!("alive", "CapMonster is alive", &["handler"]).unwrap();
+    static ref CNT: IntGaugeVec = register_int_gauge_vec!("count", "Counter", &["handler"]).unwrap();
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 struct Stat {
     url: String,
-    dt_start: Instant
+    dt_start: Instant,
 }
 
 #[derive(Debug)]
@@ -76,7 +76,7 @@ impl Proxies {
             .map(|(u, w)| ProxUrl {
                 url: u.to_string(),
                 weight: w.abs() as usize,
-                enabled: w >= &0
+                enabled: w >= &0,
             })
             .collect();
         Proxies {
@@ -87,9 +87,9 @@ impl Proxies {
     fn get(&mut self, id: usize) -> Option<String> {
         match self.list.get(&id) {
             Some(o) => {
-                warn!("OBJ | GET_TRUE item, id:{},  {} msec, {:?}", id, Instant::now().duration_since(o.date).as_millis(), o);
+                warn!( "OBJ | GET_TRUE item, id:{},  {} msec, {:?}", id, Instant::now().duration_since(o.date).as_millis(), o);
                 Some(o.url.clone())
-            },
+            }
             None => {
                 warn!("OBJ | GET_FALSE item, id:{}", id);
                 None
@@ -138,7 +138,10 @@ fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>)
     };
 
     let stat: Option<Stat> = if req.uri().path() == "/in.php" {
-        Some( Stat { url: proxy_insert.clone(), dt_start: Instant::now() })
+        Some(Stat {
+            url: proxy_insert.clone(),
+            dt_start: Instant::now(),
+        })
     } else {
         None
     };
@@ -156,7 +159,7 @@ enum CheckersErr {
     Reqwest(reqwest::Error),
     Other(String),
     Io(std::io::Error),
-    Num(std::num::ParseIntError)
+    Num(std::num::ParseIntError),
 }
 impl std::fmt::Debug for CheckersErr {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -176,9 +179,7 @@ fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersEr
         .file_name("generate.jpg")
         .mime_str("image/jpeg")
         .unwrap();
-    let form = reqwest::multipart::Form::new()
-        .text("method", "post")
-        .part("file", file_part);
+    let form = reqwest::multipart::Form::new().text("method", "post").part("file", file_part);
 
     let mut response = client.multipart(form).send().map_err(CheckersErr::Reqwest)?;
     let mut response_body = String::new();
@@ -193,20 +194,18 @@ fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersEr
         let check_api = format!("{}/res.php?action=get&id={}", proxy_now, ans_int);
         let req_get = reqwest::get(&check_api).map_err(CheckersErr::Reqwest)?.text();
         ret = match req_get.map_err(CheckersErr::Reqwest)?.as_ref() {
-            "CAPCHA_NOT_READY" => {
-                None
-            },
+            "CAPCHA_NOT_READY" => None,
             "OK|xab35" => {
                 let time_elapsed = time_now.elapsed().subsec_millis();
                 Some(Ok((retry_cnt, time_elapsed)))
-            },
-            _ => None
+            }
+            _ => None,
         };
         std::thread::sleep(std::time::Duration::from_millis(wait));
     }
     match ret {
         Some(x) => x,
-        None => Err(CheckersErr::Other("Fuck this, i'm None".to_owned()))
+        None => Err(CheckersErr::Other("Fuck this, i'm None".to_owned())),
     }
 }
 
@@ -222,8 +221,11 @@ fn main() {
         .collect();
 
     let proxies = Proxies::new(proxies_env.clone());
-    
-    let cap_check_period = std::env::var("CAP_CHECK_PERIOD").unwrap_or("5000".to_owned()).parse::<u64>().unwrap_or(5000);
+
+    let cap_check_period = std::env::var("CAP_CHECK_PERIOD")
+        .unwrap_or("5000".to_owned())
+        .parse::<u64>()
+        .unwrap_or(5000);
     let cap_check_wait = std::env::var("CAP_CHECK_WAIT").unwrap_or("200".to_owned()).parse::<u64>().unwrap_or(200);
 
     info!("== RUN with ==");
@@ -235,8 +237,6 @@ fn main() {
     let r = Arc::new(Mutex::new(proxies));
     let rr = Arc::clone(&r);
 
-    //run_checkers(r.clone());
-
     let client_main = Client::new();
 
     let proxy = move || {
@@ -245,109 +245,90 @@ fn main() {
         let inner2 = Arc::clone(&r);
 
         service_fn(move |req| {
-            let proxy_now = { inner2.lock().unwrap().get_proxy() };
-            let proxy_now2 = proxy_now.clone();
-            let proxy_now3 = proxy_now.clone();
-            let inner3 = Arc::clone(&inner);
-            let inner4 = Arc::clone(&inner);
-            let (stat, req) = change_req(proxy_now, inner3, req);
-            let stat2 = stat.clone();
-            debug!("REQ | {:?} -> {} / {}", stat, req.method(), req.uri());
-            CNT.with_label_values(&[&proxy_now3]).inc();
-            client.request(req).and_then(move |res| res.into_body().concat2()).and_then(move |body| {
-                debug!("RSP | body: {:?}", body);
-                let body_plain = std::str::from_utf8(&body).map(str::to_owned).map_err(|_x| ());
-                match body_plain {
-                    Ok(ans) => {
-                        if ans.len() < 16 && ans.len() > 5 && Bytes::from(&ans[0..3]) == Bytes::from(&b"OK|"[..]) {
-                            // yes, it's OK answer, save it
-                            let ok_answer_str = &String::from_utf8(Bytes::from(&ans[3..]).into_buf().collect()).unwrap();
-                            match ok_answer_str.parse::<usize>() {
-                                Ok(r) => {
-                                    info!("RSP | SAVING OK: {:?}, stat:{:?}", r, stat);
-                                    let mut lock = match inner4.lock() {
-                                        Ok(guard) => guard,
-                                        Err(poison) => poison.into_inner(),
-                                    };
-                                    lock.set(r, proxy_now2);
-                                }
-                                Err(_e) => debug!("RSP | not yet"),
-                            }
-                        }
-                        future::ok(Response::new(Body::from(body)))
-                    },
-                    Err(_e) => future::ok(Response::new(Body::from(body)))
+            match req.uri().path() {
+                "/metrics" => {
+                    let encoder = TextEncoder::new();
+                    let metric_families = prometheus::gather();
+                    let mut buf = Vec::<u8>::new();
+                    encoder.encode(&metric_families, &mut buf).unwrap();
+                    future::Either::B(future::ok(Response::new(Body::from(buf))))
                 }
-            }).map_err(move |err| {
-                warn!("RSP | ERR {:?} stat: {:?}", err, stat2);
-                err
-            })
+
+                _ => {
+                    let proxy_now = { inner2.lock().unwrap().get_proxy() };
+                    let proxy_now2 = proxy_now.clone();
+                    let proxy_now3 = proxy_now.clone();
+                    let inner3 = Arc::clone(&inner);
+                    let inner4 = Arc::clone(&inner);
+                    let (stat, req) = change_req(proxy_now, inner3, req);
+                    debug!("REQ | {:?} -> {} / {}", stat, req.method(), req.uri());
+                    CNT.with_label_values(&[&proxy_now3]).inc();
+                    future::Either::A(client.request(req).and_then(move |res| res.into_body().concat2()).and_then(move |body| {
+                        debug!("RSP | body: {:?}", body);
+                        let body_plain = std::str::from_utf8(&body).map(str::to_owned).map_err(|_x| ());
+                        match body_plain {
+                            Ok(ans) => {
+                                if ans.len() < 16 && ans.len() > 5 && Bytes::from(&ans[0..3]) == Bytes::from(&b"OK|"[..]) {
+                                    // yes, it's OK answer, save it
+                                    let ok_answer_str = &String::from_utf8(Bytes::from(&ans[3..]).into_buf().collect()).unwrap();
+                                    match ok_answer_str.parse::<usize>() {
+                                        Ok(r) => {
+                                            info!("RSP | SAVING OK: {:?}, stat:{:?}", r, stat);
+                                            let mut lock = match inner4.lock() {
+                                                Ok(guard) => guard,
+                                                Err(poison) => poison.into_inner(),
+                                            };
+                                            lock.set(r, proxy_now2);
+                                        }
+                                        Err(_e) => debug!("RSP | not yet"),
+                                    }
+                                }
+                                future::ok(Response::new(Body::from(body)))
+                            }
+                            Err(_e) => future::ok(Response::new(Body::from(body))),
+                        }
+                    }))
+                }
+            }
         })
     };
 
     // Run checkers
     while let Some(proxy_now) = proxies_env.pop() {
         let rr = Arc::clone(&rr);
-        std::thread::spawn(move || {
-            loop {
-                let (proxy_now, _i) = proxy_now.clone();
-                let ret = run_checkers(cap_check_wait, proxy_now.to_owned());
-                {
-                    let mut lock = match rr.lock() {
-                        Ok(guard) => guard,
-                        Err(poison) => poison.into_inner(),
-                    };
-                    match ret {
-                        Ok(x) => {
-                            debug!("cap {} checked {:?}", proxy_now, x);
-                            let (tries, ms) = x;
-                            RETRY_CNT.with_label_values(&[&proxy_now]).set(tries as i64);
-                            ACCESS_TIME.with_label_values(&[&proxy_now]).set(ms as i64);
-                            IS_ALIVE.with_label_values(&[&proxy_now]).set(1 as i64);
-                            lock.change_state(&proxy_now, true);
-                        },
-                        Err(x) => {
-                            debug!("F>U>C>K> {:?}", x);
-                            IS_ALIVE.with_label_values(&[&proxy_now]).set(0 as i64);
-                            lock.change_state(&proxy_now, false);
-                        }
+        std::thread::spawn(move || loop {
+            let (proxy_now, _i) = proxy_now.clone();
+            let ret = run_checkers(cap_check_wait, proxy_now.to_owned());
+            {
+                let mut lock = match rr.lock() {
+                    Ok(guard) => guard,
+                    Err(poison) => poison.into_inner(),
+                };
+                match ret {
+                    Ok(x) => {
+                        debug!("cap {} checked {:?}", proxy_now, x);
+                        let (tries, ms) = x;
+                        RETRY_CNT.with_label_values(&[&proxy_now]).set(tries as i64);
+                        ACCESS_TIME.with_label_values(&[&proxy_now]).set(ms as i64);
+                        IS_ALIVE.with_label_values(&[&proxy_now]).set(1 as i64);
+                        lock.change_state(&proxy_now, true);
+                    }
+                    Err(x) => {
+                        debug!("F>U>C>K> {:?}", x);
+                        IS_ALIVE.with_label_values(&[&proxy_now]).set(0 as i64);
+                        lock.change_state(&proxy_now, false);
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(cap_check_period));
             }
+            std::thread::sleep(std::time::Duration::from_millis(cap_check_period));
         });
-    };
-
-    //let retry_cnt: prometheus::Counter = Counter::with_opts(Opts::new("retry_counter", "Retry counter").const_label("name", "some-some")).unwrap();
-    //static HTTP_COUNTER2: Counter = register_counter!(opts!(
-    //    "example_http_requests_total",
-    //    "Total number of HTTP requests made.",
-    //    labels! {"handler" => "all",}
-    //))
-    //.unwrap();
-
-    let prom_fn = move || {
-        hyper::service::service_fn_ok(|_| {
-            let encoder = TextEncoder::new();
-            //HTTP_COUNTER.inc();
-            //retry_cnt.inc();
-            let metric_families = prometheus::gather();
-            let mut buf = Vec::<u8>::new();
-            encoder.encode(&metric_families, &mut buf).unwrap();
-            Response::new(Body::from(buf))
-        })
-    };
+    }
 
     let in_addr = ([0, 0, 0, 0], 8080).into();
-    hyper::rt::run(hyper::rt::lazy(move ||{
+    hyper::rt::run(hyper::rt::lazy(move || {
         let server = Server::bind(&in_addr).serve(proxy).map_err(|e| println!("Can not bind server: {}", e));
         hyper::rt::spawn(server);
         println!("Listening on http://{}", in_addr);
-        let mut in_addr2 = in_addr.clone();
-        in_addr2.set_port(9090);
-        let prom_srv = Server::bind(&in_addr2).serve(prom_fn).map_err(|e| println!("Can not bind server: {}", e));
-        hyper::rt::spawn(prom_srv);
-        println!("Proemetheus listening on http://{}", in_addr2);
         Ok(())
     }));
 }
