@@ -9,7 +9,6 @@
 
 [CapMonster](https://zennolab.com/ru/products/capmonster/) balanced proxy
 
-use & env
 ```
 Metrics for prometheus:
 http://127.0.0.1:8080/metrics
