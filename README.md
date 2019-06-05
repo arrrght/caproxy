@@ -26,6 +26,6 @@ CAPS=20:http://cap-one.org,-80:http://cap-second.net
 
 CapMonster host check:
 ```
-CAPS_CHECK_PERIOD(msec, default 5000): periods between checks
+CAPS_CHECK_PERIOD(msec, default 5000): period between checks
 CAPS_CHECK_WAIT(msec, default 200): wait for answer between NOT_READY
 ```

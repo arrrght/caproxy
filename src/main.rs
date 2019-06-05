@@ -1,7 +1,5 @@
-extern crate pretty_env_logger;
-#[macro_use]
-extern crate log;
-
+use log::{debug, info, warn};
+use lazy_static::lazy_static;
 use bytes::{Buf, Bytes, IntoBuf};
 use futures::future;
 use hyper::rt::{Future, Stream};
@@ -12,6 +10,17 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::io::Read;
+
+#[macro_use]
+extern crate prometheus;
+use prometheus::{ IntGaugeVec, Encoder, TextEncoder };
+
+lazy_static! {
+    static ref RETRY_CNT: IntGaugeVec = register_int_gauge_vec!( "retry_counter", "Retry counter", &["handler"]).unwrap();
+    static ref ACCESS_TIME: IntGaugeVec = register_int_gauge_vec!( "access_time", "Access time to CapMonster", &["handler"]).unwrap();
+    static ref IS_ALIVE: IntGaugeVec = register_int_gauge_vec!( "alive", "CapMonster is alive", &["handler"]).unwrap();
+    static ref CNT: IntGaugeVec = register_int_gauge_vec!( "cnt", "Counter", &["handler"]).unwrap();
+}
 
 #[derive(Clone,Debug)]
 struct Stat {
@@ -145,17 +154,20 @@ fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>)
 
 enum CheckersErr {
     Reqwest(reqwest::Error),
-    Other(String)
+    Other(String),
+    Io(std::io::Error),
+    Num(std::num::ParseIntError)
 }
 impl std::fmt::Debug for CheckersErr {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
             CheckersErr::Other(ref err) => write!(f, "Other: {}", err),
-            CheckersErr::Reqwest(ref err) => write!(f, "Reqwest: {:?}", err)
+            CheckersErr::Reqwest(ref err) => write!(f, "Reqwest: {:?}", err),
+            CheckersErr::Io(ref err) => write!(f, "Io: {:?}", err),
+            CheckersErr::Num(ref err) => write!(f, "Num: {:?}", err),
         }
     }
 }
-//fn run_checkers(proxy_now: String) -> Option<( usize, u32)> {
 fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersErr> {
     let time_now = Instant::now();
     let proxy_now = &proxy_now;
@@ -169,25 +181,21 @@ fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersEr
         .part("file", file_part);
 
     let mut response = client.multipart(form).send().map_err(CheckersErr::Reqwest)?;
-    //let mut response = client.multipart(form).send().expect("omg-here-1");
     let mut response_body = String::new();
-    response.read_to_string(&mut response_body).unwrap();
+    response.read_to_string(&mut response_body).map_err(CheckersErr::Io)?;
     let ans: Vec<&str> = response_body.split("|").collect();
-    let ans_int: usize = ans[1].to_string().parse().unwrap();
-    //debug!("CHK | {}", ans_int);
+    let ans_int: usize = ans[1].to_string().parse().map_err(CheckersErr::Num)?;
 
-    //let mut ret: Option<(usize, u32)> = None;
     let mut ret: Option<Result<(usize, u32), CheckersErr>> = None;
     let mut retry_cnt: usize = 0;
     while ret.is_none() || retry_cnt > 9 {
         retry_cnt += 1;
         let check_api = format!("{}/res.php?action=get&id={}", proxy_now, ans_int);
-        let req_get = reqwest::get(&check_api).unwrap().text();
-        ret = match req_get.unwrap().as_ref() {
+        let req_get = reqwest::get(&check_api).map_err(CheckersErr::Reqwest)?.text();
+        ret = match req_get.map_err(CheckersErr::Reqwest)?.as_ref() {
             "CAPCHA_NOT_READY" => {
                 None
             },
-            //x if x.starts_with("OK") => {
             "OK|xab35" => {
                 let time_elapsed = time_now.elapsed().subsec_millis();
                 Some(Ok((retry_cnt, time_elapsed)))
@@ -196,10 +204,9 @@ fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersEr
         };
         std::thread::sleep(std::time::Duration::from_millis(wait));
     }
-    //ret
     match ret {
         Some(x) => x,
-        None => Err(CheckersErr::Other("fuck this, i'm None".to_owned()))
+        None => Err(CheckersErr::Other("Fuck this, i'm None".to_owned()))
     }
 }
 
@@ -230,7 +237,6 @@ fn main() {
 
     //run_checkers(r.clone());
 
-    let in_addr = ([0, 0, 0, 0], 8080).into();
     let client_main = Client::new();
 
     let proxy = move || {
@@ -241,11 +247,13 @@ fn main() {
         service_fn(move |req| {
             let proxy_now = { inner2.lock().unwrap().get_proxy() };
             let proxy_now2 = proxy_now.clone();
+            let proxy_now3 = proxy_now.clone();
             let inner3 = Arc::clone(&inner);
             let inner4 = Arc::clone(&inner);
             let (stat, req) = change_req(proxy_now, inner3, req);
             let stat2 = stat.clone();
             debug!("REQ | {:?} -> {} / {}", stat, req.method(), req.uri());
+            CNT.with_label_values(&[&proxy_now3]).inc();
             client.request(req).and_then(move |res| res.into_body().concat2()).and_then(move |body| {
                 debug!("RSP | body: {:?}", body);
                 let body_plain = std::str::from_utf8(&body).map(str::to_owned).map_err(|_x| ());
@@ -292,10 +300,15 @@ fn main() {
                     match ret {
                         Ok(x) => {
                             debug!("cap {} checked {:?}", proxy_now, x);
+                            let (tries, ms) = x;
+                            RETRY_CNT.with_label_values(&[&proxy_now]).set(tries as i64);
+                            ACCESS_TIME.with_label_values(&[&proxy_now]).set(ms as i64);
+                            IS_ALIVE.with_label_values(&[&proxy_now]).set(1 as i64);
                             lock.change_state(&proxy_now, true);
                         },
                         Err(x) => {
                             debug!("F>U>C>K> {:?}", x);
+                            IS_ALIVE.with_label_values(&[&proxy_now]).set(0 as i64);
                             lock.change_state(&proxy_now, false);
                         }
                     }
@@ -305,10 +318,36 @@ fn main() {
         });
     };
 
+    //let retry_cnt: prometheus::Counter = Counter::with_opts(Opts::new("retry_counter", "Retry counter").const_label("name", "some-some")).unwrap();
+    //static HTTP_COUNTER2: Counter = register_counter!(opts!(
+    //    "example_http_requests_total",
+    //    "Total number of HTTP requests made.",
+    //    labels! {"handler" => "all",}
+    //))
+    //.unwrap();
+
+    let prom_fn = move || {
+        hyper::service::service_fn_ok(|_| {
+            let encoder = TextEncoder::new();
+            //HTTP_COUNTER.inc();
+            //retry_cnt.inc();
+            let metric_families = prometheus::gather();
+            let mut buf = Vec::<u8>::new();
+            encoder.encode(&metric_families, &mut buf).unwrap();
+            Response::new(Body::from(buf))
+        })
+    };
+
+    let in_addr = ([0, 0, 0, 0], 8080).into();
     hyper::rt::run(hyper::rt::lazy(move ||{
         let server = Server::bind(&in_addr).serve(proxy).map_err(|e| println!("Can not bind server: {}", e));
         hyper::rt::spawn(server);
         println!("Listening on http://{}", in_addr);
+        let mut in_addr2 = in_addr.clone();
+        in_addr2.set_port(9090);
+        let prom_srv = Server::bind(&in_addr2).serve(prom_fn).map_err(|e| println!("Can not bind server: {}", e));
+        hyper::rt::spawn(prom_srv);
+        println!("Proemetheus listening on http://{}", in_addr2);
         Ok(())
     }));
 }
