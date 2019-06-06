@@ -16,10 +16,11 @@ extern crate prometheus;
 use prometheus::{Encoder, IntGaugeVec, TextEncoder};
 
 lazy_static! {
-    static ref RETRY_CNT: IntGaugeVec = register_int_gauge_vec!("retry_counter", "Retry counter", &["handler"]).unwrap();
-    static ref ACCESS_TIME: IntGaugeVec = register_int_gauge_vec!("access_time", "Access time to CapMonster", &["handler"]).unwrap();
-    static ref IS_ALIVE: IntGaugeVec = register_int_gauge_vec!("alive", "CapMonster is alive", &["handler"]).unwrap();
-    static ref CNT: IntGaugeVec = register_int_gauge_vec!("count", "Counter", &["handler"]).unwrap();
+    static ref RETRY_CNT: IntGaugeVec = register_int_gauge_vec!("cap_retry_counter", "Retry counter", &["handler"]).unwrap();
+    static ref ACCESS_TIME: IntGaugeVec = register_int_gauge_vec!("cap_access_time", "Access time to CapMonster", &["handler"]).unwrap();
+    static ref IS_ALIVE: IntGaugeVec = register_int_gauge_vec!("cap_alive", "CapMonster is alive", &["handler"]).unwrap();
+    static ref CNT: IntGaugeVec = register_int_gauge_vec!("cap_count", "Counter", &["handler"]).unwrap();
+    static ref WEIGHT: IntGaugeVec = register_int_gauge_vec!("cap_weight", "Weights", &["handler"]).unwrap();
 }
 
 #[derive(Clone, Debug)]
@@ -216,7 +217,10 @@ fn main() {
         .split(",")
         .map(|x| {
             let a: Vec<&str> = x.split("=").collect();
-            (a[1..].join("="), a[0].parse::<isize>().expect("Can not parse weight on CAPS environment"))
+            let name = a[1..].join("=");
+            let weight = a[0].parse::<isize>().expect("Can not parse weight on CAPS environment");
+            WEIGHT.with_label_values(&[&name]).set(weight.abs() as i64);
+            (name, weight)
         })
         .collect();
 
@@ -227,6 +231,7 @@ fn main() {
         .parse::<u64>()
         .unwrap_or(5000);
     let cap_check_wait = std::env::var("CAP_CHECK_WAIT").unwrap_or("200".to_owned()).parse::<u64>().unwrap_or(200);
+    let in_addr: std::net::SocketAddr = std::env::var("CAP_LISTEN").unwrap_or("0.0.0.0:8080".to_owned()).parse().expect("can't parse listen addr");
 
     info!("== RUN with ==");
     info!("CAP_CHECK_PERIOD : {:?} msec", cap_check_period);
@@ -324,7 +329,6 @@ fn main() {
         });
     }
 
-    let in_addr = ([0, 0, 0, 0], 8080).into();
     hyper::rt::run(hyper::rt::lazy(move || {
         let server = Server::bind(&in_addr).serve(proxy).map_err(|e| println!("Can not bind server: {}", e));
         hyper::rt::spawn(server);
