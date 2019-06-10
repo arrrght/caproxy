@@ -186,6 +186,7 @@ fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersEr
     let mut response_body = String::new();
     response.read_to_string(&mut response_body).map_err(CheckersErr::Io)?;
     let ans: Vec<&str> = response_body.split("|").collect();
+    if ans.len() < 2 { return Err(CheckersErr::Other("Answer is not an answer".to_owned())) }
     let ans_int: usize = ans[1].to_string().parse().map_err(CheckersErr::Num)?;
 
     let mut ret: Option<Result<(usize, u32), CheckersErr>> = None;
@@ -268,24 +269,27 @@ fn main() {
                     let (stat, req) = change_req(proxy_now, inner3, req);
                     debug!("REQ | {:?} -> {} / {}", stat, req.method(), req.uri());
                     CNT.with_label_values(&[&proxy_now3]).inc();
-                    future::Either::A(client.request(req).and_then(move |res| res.into_body().concat2()).and_then(move |body| {
+                    future::Either::A(client.request(req).and_then(move |res| {
+                        // cut error here
+                        res.into_body().concat2()
+                    }).and_then(move |body| {
                         debug!("RSP | body: {:?}", body);
                         let body_plain = std::str::from_utf8(&body).map(str::to_owned).map_err(|_x| ());
                         match body_plain {
                             Ok(ans) => {
                                 if ans.len() < 16 && ans.len() > 5 && Bytes::from(&ans[0..3]) == Bytes::from(&b"OK|"[..]) {
-                                    // yes, it's OK answer, save it
                                     let ok_answer_str = &String::from_utf8(Bytes::from(&ans[3..]).into_buf().collect()).unwrap();
+                                    info!("RSP | ANS {}", &String::from_utf8(Bytes::from(&ans[..]).into_buf().collect()).unwrap());
+                                    // yes, it's OK answer, save it
                                     match ok_answer_str.parse::<usize>() {
                                         Ok(r) => {
-                                            info!("RSP | SAVING OK: {:?}, stat:{:?}", r, stat);
                                             let mut lock = match inner4.lock() {
                                                 Ok(guard) => guard,
                                                 Err(poison) => poison.into_inner(),
                                             };
                                             lock.set(r, proxy_now2);
                                         }
-                                        Err(_e) => debug!("RSP | not yet"),
+                                        Err(_e) => {}
                                     }
                                 }
                                 future::ok(Response::new(Body::from(body)))
@@ -311,7 +315,7 @@ fn main() {
                 };
                 match ret {
                     Ok(x) => {
-                        debug!("cap {} checked {:?}", proxy_now, x);
+                        debug!("CHK | OK cap {} checked {:?}", proxy_now, x);
                         let (tries, ms) = x;
                         RETRY_CNT.with_label_values(&[&proxy_now]).set(tries as i64);
                         ACCESS_TIME.with_label_values(&[&proxy_now]).set(ms as i64);
@@ -319,7 +323,7 @@ fn main() {
                         lock.change_state(&proxy_now, true);
                     }
                     Err(x) => {
-                        debug!("F>U>C>K> {:?}", x);
+                        debug!("CHK | ERR {:?}", x);
                         IS_ALIVE.with_label_values(&[&proxy_now]).set(0 as i64);
                         lock.change_state(&proxy_now, false);
                     }
