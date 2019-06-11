@@ -13,7 +13,7 @@ use std::time::Instant;
 
 #[macro_use]
 extern crate prometheus;
-use prometheus::{Encoder, IntGaugeVec, TextEncoder};
+use prometheus::{Encoder, IntCounterVec, IntGaugeVec, TextEncoder};
 
 mod errors;
 use errors::CheckersErr;
@@ -24,7 +24,7 @@ lazy_static! {
     static ref RETRY_CNT: IntGaugeVec = register_int_gauge_vec!("cap_retry_counter", "Retry counter", &["handler"]).unwrap();
     static ref ACCESS_TIME: IntGaugeVec = register_int_gauge_vec!("cap_access_time", "Access time to CapMonster", &["handler"]).unwrap();
     static ref IS_ALIVE: IntGaugeVec = register_int_gauge_vec!("cap_alive", "CapMonster is alive", &["handler"]).unwrap();
-    static ref CNT: IntGaugeVec = register_int_gauge_vec!("cap_count", "Counter", &["handler"]).unwrap();
+    static ref CNT: IntCounterVec = register_int_counter_vec!("cap_count", "Counter", &["handler"]).unwrap();
     static ref WEIGHT: IntGaugeVec = register_int_gauge_vec!("cap_weight", "Weights", &["handler"]).unwrap();
 }
 
@@ -213,6 +213,8 @@ fn main() {
                     Err(x) => {
                         debug!("CHK | ERR cap {} error {:?}", proxy_now, x);
                         IS_ALIVE.with_label_values(&[&proxy_now]).set(0 as i64);
+                        RETRY_CNT.with_label_values(&[&proxy_now]).set(0 as i64);
+                        ACCESS_TIME.with_label_values(&[&proxy_now]).set(0 as i64);
                         lock.change_state(&proxy_now, false);
                     }
                 }
