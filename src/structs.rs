@@ -88,9 +88,7 @@ impl Proxies {
 
         // cleanup
         let now = Instant::now();
-        let r2del: Vec<usize> = self
-            .list
-            .iter()
+        let r2del: Vec<usize> = self.list.iter()
             .filter(|&(_, v)| now.duration_since(v.date).as_secs() > 60)
             .map(|(k, _)| k.to_owned())
             .collect();

@@ -5,6 +5,11 @@ RUN apt-get install libssl-dev musl-tools -y
 RUN rustup target add x86_64-unknown-linux-musl
 
 WORKDIR /usr/src/caproxy
+COPY .dummy.rs src/main.rs
+COPY Cargo.lock .
+COPY Cargo.toml .
+RUN cargo build --release --target=x86_64-unknown-linux-musl --features=vendored
+
 COPY . .
 RUN cargo build --release --target=x86_64-unknown-linux-musl --features=vendored
 

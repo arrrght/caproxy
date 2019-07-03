@@ -26,6 +26,7 @@ lazy_static! {
     static ref IS_ALIVE: IntGaugeVec = register_int_gauge_vec!("cap_alive", "CapMonster is alive", &["handler"]).unwrap();
     static ref CNT: IntCounterVec = register_int_counter_vec!("cap_count", "Counter", &["handler"]).unwrap();
     static ref WEIGHT: IntGaugeVec = register_int_gauge_vec!("cap_weight", "Weights", &["handler"]).unwrap();
+    static ref JPG:[u8;5532] = *include_bytes!("generate.jpg");
 }
 
 fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>) -> (Option<Stat>, Request<Body>) {
@@ -70,7 +71,8 @@ fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>)
 fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersErr> {
     let time_start = Instant::now();
     let client = reqwest::Client::new().post(&format!("{}/in.php", proxy_now));
-    let file_part = reqwest::multipart::Part::bytes(&include_bytes!("generate.jpg")[..]).file_name("generate.jpg").mime_str("image/jpeg")?;
+    //let file_part = reqwest::multipart::Part::bytes(&include_bytes!("generate.jpg")[..]).file_name("generate.jpg").mime_str("image/jpeg")?;
+    let file_part = reqwest::multipart::Part::bytes(&JPG[..]).file_name("generate.jpg").mime_str("image/jpeg")?;
     let form = reqwest::multipart::Form::new().text("method", "post").part("file", file_part);
 
     let mut response = client.multipart(form).send()?;
@@ -118,14 +120,15 @@ fn main() {
 
     let proxies = Proxies::new(proxies_env.clone());
 
-    let cap_check_period = std::env::var("CAP_CHECK_PERIOD") .unwrap_or("5000".to_owned()) .parse::<u64>() .unwrap_or(5000);
+    let cap_check_period = std::env::var("CAP_CHECK_PERIOD").unwrap_or("5000".to_owned()) .parse::<u64>() .unwrap_or(5000);
     let cap_check_wait = std::env::var("CAP_CHECK_WAIT").unwrap_or("200".to_owned()).parse::<u64>().unwrap_or(200);
     let in_addr: std::net::SocketAddr = std::env::var("CAP_LISTEN").unwrap_or("0.0.0.0:8080".to_owned()).parse().expect("can't parse listen addr");
 
     info!("== RUN with ==");
     info!("CAP_CHECK_PERIOD : {:?} msec", cap_check_period);
     info!("CAP_CHECK_WAIT   : {:?} msec", cap_check_wait);
-    info!("CAPS {:?}", proxies);
+    info!("CAP_LISTEN       : {:?}", in_addr);
+    info!("CAPS             : {:?}", proxies.urls);
     info!("==============");
 
     let r = Arc::new(Mutex::new(proxies));
@@ -193,10 +196,11 @@ fn main() {
     // Run checkers
     while let Some(proxy_now) = proxies_env.pop() {
         let rr = Arc::clone(&rr);
-        std::thread::spawn(move || loop {
-            let (proxy_now, _i) = proxy_now.clone();
-            let ret = run_checkers(cap_check_wait, proxy_now.to_owned());
-            {
+        std::thread::spawn(move || {
+            println!("*** SPAWN ***");
+            loop {
+                let (proxy_now, _i) = proxy_now.clone();
+                let ret = run_checkers(cap_check_wait, proxy_now.to_owned());
                 let mut lock = match rr.lock() {
                     Ok(guard) => guard,
                     Err(poison) => poison.into_inner(),
@@ -218,15 +222,15 @@ fn main() {
                         lock.change_state(&proxy_now, false);
                     }
                 }
+                std::thread::sleep(std::time::Duration::from_millis(cap_check_period));
             }
-            std::thread::sleep(std::time::Duration::from_millis(cap_check_period));
         });
     }
 
     hyper::rt::run(hyper::rt::lazy(move || {
-        let server = Server::bind(&in_addr).serve(proxy).map_err(|e| println!("Can not bind server: {}", e));
+        let server = Server::bind(&in_addr).serve(proxy).map_err(|e| eprintln!("Can not bind server: {}", e));
         hyper::rt::spawn(server);
-        println!("Listening on http://{}", in_addr);
+        info!("Listening on http://{}", in_addr);
         Ok(())
     }));
 }
