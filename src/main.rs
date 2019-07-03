@@ -69,6 +69,25 @@ fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>)
 }
 
 fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersErr> {
+    hyper::rt::run(hyper::rt::lazy(move || {
+        let client = Client::new();
+        let req = Request::builder().method("POST").uri(proxy_now).body(Body::from("hello")).expect("req builder");
+        client.request(req).and_then(|res| {
+            println!("res: {:?}", res);
+            res.into_body().concat2()
+        }).and_then(|body| {
+            println!("body {:?}", body);
+            future::ok(Response::new(Body::from(body)))
+        }).map(|_| {
+            println!("done");
+        }).map_err(|err| {
+            println!("oh my god {}", err);
+        })
+    }));
+    Err(CheckersErr::Other("Fuck this, i'm None".to_owned()))
+}
+
+fn run_checkers2(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersErr> {
     let time_start = Instant::now();
     let client = reqwest::Client::new().post(&format!("{}/in.php", proxy_now));
     //let file_part = reqwest::multipart::Part::bytes(&include_bytes!("generate.jpg")[..]).file_name("generate.jpg").mime_str("image/jpeg")?;
