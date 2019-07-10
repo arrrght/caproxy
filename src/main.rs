@@ -13,9 +13,10 @@ use std::time::Instant;
 
 #[macro_use]
 extern crate prometheus;
-use prometheus::{Encoder, IntGaugeVec, TextEncoder};
+use prometheus::{Encoder, IntCounterVec,IntGaugeVec, TextEncoder};
 
 lazy_static! {
+    static ref ERRS: IntCounterVec = register_int_counter_vec!("cap_errors", "Error counter", &["type"]).unwrap();
     static ref RETRY_CNT: IntGaugeVec = register_int_gauge_vec!("cap_retry_counter", "Retry counter", &["handler"]).unwrap();
     static ref ACCESS_TIME: IntGaugeVec = register_int_gauge_vec!("cap_access_time", "Access time to CapMonster", &["handler"]).unwrap();
     static ref IS_ALIVE: IntGaugeVec = register_int_gauge_vec!("cap_alive", "CapMonster is alive", &["handler"]).unwrap();
@@ -273,6 +274,15 @@ fn main() {
                         // cut error here
                         res.into_body().concat2()
                     }).and_then(move |body| {
+
+                        if Bytes::from(&body[0..3]) == Bytes::from(&b"OK|"[..]){
+                            ERRS.with_label_values(&[&"OK"]).inc();
+                        }else if body.len() > 5 && body.len() < 64 && Bytes::from(&body[0..6]) == Bytes::from(&b"ERROR_"[..]){
+                            let s = String::from_utf8_lossy(&body).to_string();
+                            let s2 = s.split_whitespace().next().unwrap_or(&s);
+                            ERRS.with_label_values(&[&s2]).inc();
+                        }
+
                         debug!("RSP | body: {:?}", body);
                         let body_plain = std::str::from_utf8(&body).map(str::to_owned).map_err(|_x| ());
                         match body_plain {
