@@ -1,12 +1,17 @@
+mod errors;
+mod structs;
+use errors::CheckersErr;
+use structs::{Proxies, Stat};
+
+#[allow(unused_imports)]
+use log::{debug, info, warn};
+
 use bytes::{Buf, Bytes, IntoBuf};
 use futures::future;
 use hyper::rt::{Future, Stream};
 use hyper::service::service_fn;
 use hyper::{Body, Client, Request, Response, Server};
 use lazy_static::lazy_static;
-use log::{debug, info, warn};
-use rand::Rng;
-use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -22,100 +27,6 @@ lazy_static! {
     static ref IS_ALIVE: IntGaugeVec = register_int_gauge_vec!("cap_alive", "CapMonster is alive", &["handler"]).unwrap();
     static ref CNT: IntGaugeVec = register_int_gauge_vec!("cap_count", "Counter", &["handler"]).unwrap();
     static ref WEIGHT: IntGaugeVec = register_int_gauge_vec!("cap_weight", "Weights", &["handler"]).unwrap();
-}
-
-#[derive(Clone, Debug)]
-struct Stat {
-    url: String,
-    dt_start: Instant,
-}
-
-#[derive(Debug)]
-struct Prox {
-    url: String,
-    date: std::time::Instant,
-}
-#[derive(Debug)]
-struct ProxUrl {
-    url: String,
-    weight: usize,
-    enabled: bool,
-}
-
-#[derive(Debug)]
-struct Proxies {
-    urls: Vec<ProxUrl>,
-    list: HashMap<usize, Prox>,
-}
-
-impl Proxies {
-    fn get_proxy(&self) -> String {
-        let mut rng = rand::thread_rng();
-        let sum_weight = self.urls.iter().filter(|f| f.enabled).fold(0, |acc, x| acc + x.weight);
-        let random = rng.gen_range(0, sum_weight - 1);
-
-        let mut now: usize = 0;
-        let mut final_result = self.urls[rng.gen_range(0, self.urls.len())].url.to_owned();
-        for i in self.urls.iter() {
-            now += i.weight;
-            if now >= random && i.enabled {
-                final_result = i.url.to_owned();
-                break;
-            }
-        }
-        final_result.to_owned()
-    }
-    fn change_state(&mut self, disable_url: &str, b: bool) {
-        for url in self.urls.iter_mut() {
-            if *url.url == *disable_url {
-                url.enabled = b;
-            }
-        }
-    }
-    fn new(vec: Vec<(String, isize)>) -> Proxies {
-        let urls = vec
-            .iter()
-            .map(|(u, w)| ProxUrl {
-                url: u.to_string(),
-                weight: w.abs() as usize,
-                enabled: w >= &0,
-            })
-            .collect();
-        Proxies {
-            urls: urls,
-            list: HashMap::new(),
-        }
-    }
-    fn get(&mut self, id: usize) -> Option<String> {
-        match self.list.get(&id) {
-            Some(o) => {
-                warn!( "OBJ | GET_TRUE item, id:{},  {} msec, {:?}", id, Instant::now().duration_since(o.date).as_millis(), o);
-                Some(o.url.clone())
-            }
-            None => {
-                warn!("OBJ | GET_FALSE item, id:{}", id);
-                None
-            }
-        }
-    }
-    fn set(&mut self, id: usize, url: String) {
-        let prox = Prox {
-            url: url,
-            date: Instant::now(),
-        };
-        self.list.insert(id, prox);
-
-        // cleanup
-        let now = Instant::now();
-        let r2del: Vec<usize> = self
-            .list
-            .iter()
-            .filter(|&(_, v)| now.duration_since(v.date).as_secs() > 60)
-            .map(|(k, _)| k.to_owned())
-            .collect();
-        let _consumed: Vec<_> = r2del.iter().map(|i| self.list.remove(i)).collect();
-        debug!("OBJ | R2D | {:?}", r2del);
-    }
 }
 
 fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>) -> (Option<Stat>, Request<Body>) {
@@ -157,22 +68,6 @@ fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>)
     (stat, req)
 }
 
-enum CheckersErr {
-    Reqwest(reqwest::Error),
-    Other(String),
-    Io(std::io::Error),
-    Num(std::num::ParseIntError),
-}
-impl std::fmt::Debug for CheckersErr {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match *self {
-            CheckersErr::Other(ref err) => write!(f, "Other: {}", err),
-            CheckersErr::Reqwest(ref err) => write!(f, "Reqwest: {:?}", err),
-            CheckersErr::Io(ref err) => write!(f, "Io: {:?}", err),
-            CheckersErr::Num(ref err) => write!(f, "Num: {:?}", err),
-        }
-    }
-}
 fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersErr> {
     let time_now = Instant::now();
     let proxy_now = &proxy_now;
@@ -183,20 +78,20 @@ fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersEr
         .unwrap();
     let form = reqwest::multipart::Form::new().text("method", "post").part("file", file_part);
 
-    let mut response = client.multipart(form).send().map_err(CheckersErr::Reqwest)?;
+    let mut response = client.multipart(form).send()?;
     let mut response_body = String::new();
-    response.read_to_string(&mut response_body).map_err(CheckersErr::Io)?;
+    response.read_to_string(&mut response_body)?;
     let ans: Vec<&str> = response_body.split("|").collect();
     if ans.len() < 2 { return Err(CheckersErr::Other("Answer is not an answer".to_owned())) }
-    let ans_int: usize = ans[1].to_string().parse().map_err(CheckersErr::Num)?;
+    let ans_int: usize = ans[1].to_string().parse()?;
 
     let mut ret: Option<Result<(usize, u32), CheckersErr>> = None;
     let mut retry_cnt: usize = 0;
     while ret.is_none() || retry_cnt > 9 {
         retry_cnt += 1;
         let check_api = format!("{}/res.php?action=get&id={}", proxy_now, ans_int);
-        let req_get = reqwest::get(&check_api).map_err(CheckersErr::Reqwest)?.text();
-        ret = match req_get.map_err(CheckersErr::Reqwest)?.as_ref() {
+        let req_get = reqwest::get(&check_api)?.text();
+        ret = match req_get?.as_ref() {
             "CAPCHA_NOT_READY" => None,
             "OK|xab35" => {
                 let time_elapsed = time_now.elapsed().subsec_millis();
