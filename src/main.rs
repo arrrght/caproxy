@@ -1,3 +1,8 @@
+mod errors;
+mod structs;
+use errors::CheckersErr;
+use structs::{Proxies, Stat};
+
 #[allow(unused_imports)]
 use log::{debug, info, warn};
 
@@ -13,20 +18,15 @@ use std::time::Instant;
 
 #[macro_use]
 extern crate prometheus;
-use prometheus::{Encoder, IntCounterVec, IntGaugeVec, TextEncoder};
-
-mod errors;
-use errors::CheckersErr;
-mod structs;
-use structs::{Proxies, Stat};
+use prometheus::{Encoder, IntCounterVec,IntGaugeVec, TextEncoder};
 
 lazy_static! {
+    static ref ERRS: IntCounterVec = register_int_counter_vec!("cap_errors", "Error counter", &["type"]).unwrap();
     static ref RETRY_CNT: IntGaugeVec = register_int_gauge_vec!("cap_retry_counter", "Retry counter", &["handler"]).unwrap();
     static ref ACCESS_TIME: IntGaugeVec = register_int_gauge_vec!("cap_access_time", "Access time to CapMonster", &["handler"]).unwrap();
     static ref IS_ALIVE: IntGaugeVec = register_int_gauge_vec!("cap_alive", "CapMonster is alive", &["handler"]).unwrap();
-    static ref CNT: IntCounterVec = register_int_counter_vec!("cap_count", "Counter", &["handler"]).unwrap();
+    static ref CNT: IntGaugeVec = register_int_gauge_vec!("cap_count", "Counter", &["handler"]).unwrap();
     static ref WEIGHT: IntGaugeVec = register_int_gauge_vec!("cap_weight", "Weights", &["handler"]).unwrap();
-    static ref JPG:[u8;5532] = *include_bytes!("generate.jpg");
 }
 
 fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>) -> (Option<Stat>, Request<Body>) {
@@ -69,17 +69,20 @@ fn change_req(proxy_now: String, r: Arc<Mutex<Proxies>>, mut req: Request<Body>)
 }
 
 fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersErr> {
-    let time_start = Instant::now();
+    let time_now = Instant::now();
+    let proxy_now = &proxy_now;
     let client = reqwest::Client::new().post(&format!("{}/in.php", proxy_now));
-    //let file_part = reqwest::multipart::Part::bytes(&include_bytes!("generate.jpg")[..]).file_name("generate.jpg").mime_str("image/jpeg")?;
-    let file_part = reqwest::multipart::Part::bytes(&JPG[..]).file_name("generate.jpg").mime_str("image/jpeg")?;
+    let file_part = reqwest::multipart::Part::bytes(&include_bytes!("generate.jpg")[..])
+        .file_name("generate.jpg")
+        .mime_str("image/jpeg")
+        .unwrap();
     let form = reqwest::multipart::Form::new().text("method", "post").part("file", file_part);
 
     let mut response = client.multipart(form).send()?;
     let mut response_body = String::new();
     response.read_to_string(&mut response_body)?;
     let ans: Vec<&str> = response_body.split("|").collect();
-    if ans.len() < 2 { return Err(CheckersErr::Other("Isn't answer".to_owned())) }
+    if ans.len() < 2 { return Err(CheckersErr::Other("Answer is not an answer".to_owned())) }
     let ans_int: usize = ans[1].to_string().parse()?;
 
     let mut ret: Option<Result<(usize, u32), CheckersErr>> = None;
@@ -91,7 +94,7 @@ fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersEr
         ret = match req_get?.as_ref() {
             "CAPCHA_NOT_READY" => None,
             "OK|xab35" => {
-                let time_elapsed = time_start.elapsed().subsec_millis();
+                let time_elapsed = time_now.elapsed().subsec_millis();
                 Some(Ok((retry_cnt, time_elapsed)))
             }
             _ => None,
@@ -120,15 +123,17 @@ fn main() {
 
     let proxies = Proxies::new(proxies_env.clone());
 
-    let cap_check_period = std::env::var("CAP_CHECK_PERIOD").unwrap_or("5000".to_owned()) .parse::<u64>() .unwrap_or(5000);
+    let cap_check_period = std::env::var("CAP_CHECK_PERIOD")
+        .unwrap_or("5000".to_owned())
+        .parse::<u64>()
+        .unwrap_or(5000);
     let cap_check_wait = std::env::var("CAP_CHECK_WAIT").unwrap_or("200".to_owned()).parse::<u64>().unwrap_or(200);
     let in_addr: std::net::SocketAddr = std::env::var("CAP_LISTEN").unwrap_or("0.0.0.0:8080".to_owned()).parse().expect("can't parse listen addr");
 
     info!("== RUN with ==");
     info!("CAP_CHECK_PERIOD : {:?} msec", cap_check_period);
     info!("CAP_CHECK_WAIT   : {:?} msec", cap_check_wait);
-    info!("CAP_LISTEN       : {:?}", in_addr);
-    info!("CAPS             : {:?}", proxies.urls);
+    info!("CAPS {:?}", proxies);
     info!("==============");
 
     let r = Arc::new(Mutex::new(proxies));
@@ -164,6 +169,15 @@ fn main() {
                         // cut error here
                         res.into_body().concat2()
                     }).and_then(move |body| {
+
+                        if Bytes::from(&body[0..3]) == Bytes::from(&b"OK|"[..]){
+                            ERRS.with_label_values(&[&"OK"]).inc();
+                        }else if body.len() > 5 && body.len() < 64 && Bytes::from(&body[0..6]) == Bytes::from(&b"ERROR_"[..]){
+                            let s = String::from_utf8_lossy(&body).to_string();
+                            let s2 = s.split_whitespace().next().unwrap_or(&s);
+                            ERRS.with_label_values(&[&s2]).inc();
+                        }
+
                         debug!("RSP | body: {:?}", body);
                         let body_plain = std::str::from_utf8(&body).map(str::to_owned).map_err(|_x| ());
                         match body_plain {
@@ -196,11 +210,10 @@ fn main() {
     // Run checkers
     while let Some(proxy_now) = proxies_env.pop() {
         let rr = Arc::clone(&rr);
-        std::thread::spawn(move || {
-            println!("*** SPAWN ***");
-            loop {
-                let (proxy_now, _i) = proxy_now.clone();
-                let ret = run_checkers(cap_check_wait, proxy_now.to_owned());
+        std::thread::spawn(move || loop {
+            let (proxy_now, _i) = proxy_now.clone();
+            let ret = run_checkers(cap_check_wait, proxy_now.to_owned());
+            {
                 let mut lock = match rr.lock() {
                     Ok(guard) => guard,
                     Err(poison) => poison.into_inner(),
@@ -215,22 +228,20 @@ fn main() {
                         lock.change_state(&proxy_now, true);
                     }
                     Err(x) => {
-                        debug!("CHK | ERR cap {} error {:?}", proxy_now, x);
+                        debug!("CHK | ERR {:?}", x);
                         IS_ALIVE.with_label_values(&[&proxy_now]).set(0 as i64);
-                        RETRY_CNT.with_label_values(&[&proxy_now]).set(0 as i64);
-                        ACCESS_TIME.with_label_values(&[&proxy_now]).set(0 as i64);
                         lock.change_state(&proxy_now, false);
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(cap_check_period));
             }
+            std::thread::sleep(std::time::Duration::from_millis(cap_check_period));
         });
     }
 
     hyper::rt::run(hyper::rt::lazy(move || {
-        let server = Server::bind(&in_addr).serve(proxy).map_err(|e| eprintln!("Can not bind server: {}", e));
+        let server = Server::bind(&in_addr).serve(proxy).map_err(|e| println!("Can not bind server: {}", e));
         hyper::rt::spawn(server);
-        info!("Listening on http://{}", in_addr);
+        println!("Listening on http://{}", in_addr);
         Ok(())
     }));
 }
