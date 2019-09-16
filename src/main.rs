@@ -101,6 +101,10 @@ fn run_checkers(wait: u64, proxy_now: String) -> Result<(usize, u32), CheckersEr
         };
         std::thread::sleep(std::time::Duration::from_millis(wait));
     }
+    // HERE debug
+    let time_elapsed = time_now.elapsed().subsec_millis();
+    ACCESS_TIME.with_label_values(&[&proxy_now]).set(time_elapsed  as i64);
+
     match ret {
         Some(x) => x,
         None => Err(CheckersErr::Other("Fuck this, i'm None".to_owned())),
